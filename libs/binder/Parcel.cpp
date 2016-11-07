@@ -384,7 +384,7 @@ status_t Parcel::appendFrom(const Parcel *parcel, size_t offset, size_t len)
     // Count objects in range
     for (int i = 0; i < (int) size; i++) {
         size_t off = objects[i];
-        if ((off >= offset) && (off + sizeof(flat_binder_object) <= offset + len)) {
+        if ((off >= offset) && (off < offset + len)) {
             if (firstIndex == -1) {
                 firstIndex = i;
             }
@@ -819,6 +819,12 @@ status_t Parcel::writeBlob(size_t len, WritableBlob* outBlob)
     return status;
 }
 
+extern "C" status_t _ZN7android10MemoryBaseC1ERKNS_2spINS_11IMemoryHeapEEElj(void *parcel, void *val);
+
+extern "C" status_t _ZN7android10MemoryBaseC1ERKNS_2spINS_11IMemoryHeapEEElj(void *parcel, void *val) {
+	return _ZN7android10MemoryBaseC1ERKNS_2spINS_11IMemoryHeapEEElj(parcel,val);
+}
+
 status_t Parcel::write(const FlattenableHelperInterface& val)
 {
     status_t err;
@@ -1144,19 +1150,9 @@ native_handle* Parcel::readNativeHandle() const
     if (err != NO_ERROR) return 0;
 
     native_handle* h = native_handle_create(numFds, numInts);
-    if (!h) {
-        return 0;
-    }
-
     for (int i=0 ; err==NO_ERROR && i<numFds ; i++) {
         h->data[i] = dup(readFileDescriptor());
-        if (h->data[i] < 0) {
-            for (int j = 0; j < i; j++) {
-                close(h->data[j]);
-            }
-            native_handle_delete(h);
-            return 0;
-        }
+        if (h->data[i] < 0) err = BAD_VALUE;
     }
     err = read(h->data + numFds, sizeof(int)*numInts);
     if (err != NO_ERROR) {

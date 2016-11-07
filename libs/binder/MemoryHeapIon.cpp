@@ -1,12 +1,12 @@
 /*
- * Copyright Samsung Electronics Co.,LTD.
- * Copyright (C) 2011 The Android Open Source Project
+ * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (c) 2011, Code Aurora Forum. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,176 +14,486 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-/*!
- * \file MemoryHeapIon.cpp
- * \brief source file for MemoryHeapIon
- * \author MinGu, Jeon(mingu85.jeon)
- * \date 2011/11/20
- *
- * <b>Revision History: </b>
- * - 2011/11/20 : MinGu, Jeon(mingu85.jeon)) \n
- * Initial version
- * - 2012/11/29 : MinGu, Jeon(mingu85.jeon)) \n
- * Change name
- */
+
+#define LOG_TAG "MemoryHeapIon"
 
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/types.h>
-#include <cutils/log.h>
-#include <binder/MemoryHeapBase.h>
-#include <binder/IMemory.h>
-#include <binder/MemoryHeapIon.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/mman.h>
-#include "ion.h"
+#include <sys/stat.h>
+#include <sys/ioctl.h>
 
-#define HEAP_MASK_FILTER    ((1 << 16) - (2))
-#define FLAG_MASK_FILTER    (~(HEAP_MASK_FILTER) - (1))
+#include <cutils/log.h>
+
+#include <binder/MemoryHeapIon.h>
+#include <binder/MemoryHeapBase.h>
+
+#ifdef USE_TARGET_SIMULATOR_MODE
+#include <linux/ion.h>
+//modify for make sdk
+struct ion_phys_data {
+    int fd_buffer;
+    unsigned long phys;
+    size_t size;
+};
+
+struct ion_msync_data {
+    int fd_buffer;
+    void *vaddr;
+    void *paddr;
+    size_t size;
+};
+
+enum ION_SPRD_CUSTOM_CMD {
+    ION_SPRD_CUSTOM_PHYS,
+    ION_SPRD_CUSTOM_MSYNC
+};
+#else
+#include "ion.h"
+#include "ion_sprd.h"
+#endif
 
 namespace android {
 
-uint32_t ion_HeapMask_valid_check(uint32_t flags)
-{
-    uint32_t heap_mask, result;
-    result = 0;
-
-    heap_mask = flags & HEAP_MASK_FILTER;
-
-    switch(heap_mask) {
-        case MHB_ION_HEAP_SYSTEM_MASK:
-            return ION_HEAP_SYSTEM_MASK;
-        case MHB_ION_HEAP_SYSTEM_CONTIG_MASK:
-            return ION_HEAP_SYSTEM_CONTIG_MASK;
-        case MHB_ION_HEAP_EXYNOS_CONTIG_MASK:
-            return ION_HEAP_EXYNOS_CONTIG_MASK;
-        case MHB_ION_HEAP_EXYNOS_MASK:
-            return ION_HEAP_EXYNOS_MASK;
-        default:
-            ALOGE("MemoryHeapIon : Heap Mask flag is default (flags:%x)", flags);
-            return 0;
-            break;
+int  MemoryHeapIon::Get_phy_addr_from_ion(int buffer_fd, int *phy_addr, int *size){
+    int fd = open("/dev/ion", O_SYNC);
+    if(fd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_phys_data phys_data;
+        struct ion_custom_data  custom_data;
+        phys_data.fd_buffer = buffer_fd;
+        custom_data.cmd = ION_SPRD_CUSTOM_PHYS;
+        custom_data.arg = (unsigned long)&phys_data;
+        ret = ioctl(fd,ION_IOC_CUSTOM,&custom_data);
+        *phy_addr = phys_data.phys;
+        *size = phys_data.size;
+        close(fd);
+        if(ret)
+        {
+            ALOGE("%s: Getphyaddr error!",__func__);
+            return -2;
+        }
     }
-    ALOGE("MemoryHeapIon : Heap Mask flag is wrong (flags:%x)", flags);
     return 0;
 }
 
-uint32_t ion_FlagMask_valid_check(uint32_t flags)
-{
-    uint32_t flag_mask, result;
-    result = 0;
-
-    flag_mask = flags & FLAG_MASK_FILTER;
-
-    if (flag_mask & MHB_ION_FLAG_CACHED)
-        result |= ION_FLAG_CACHED;
-    if (flag_mask & MHB_ION_FLAG_CACHED_NEEDS_SYNC)
-        result |= ION_FLAG_CACHED_NEEDS_SYNC;
-    if (flag_mask & MHB_ION_FLAG_PRESERVE_KMAP)
-        result |= ION_FLAG_PRESERVE_KMAP;
-    if (flag_mask & MHB_ION_EXYNOS_VIDEO_MASK)
-        result |= ION_EXYNOS_VIDEO_MASK;
-    if (flag_mask & MHB_ION_EXYNOS_MFC_INPUT_MASK)
-        result |= ION_EXYNOS_MFC_INPUT_MASK;
-    if (flag_mask & MHB_ION_EXYNOS_MFC_OUTPUT_MASK)
-        result |= ION_EXYNOS_MFC_OUTPUT_MASK;
-    if (flag_mask & MHB_ION_EXYNOS_GSC_MASK)
-        result |= ION_EXYNOS_GSC_MASK;
-    if (flag_mask & MHB_ION_EXYNOS_FIMD_VIDEO_MASK)
-        result |= ION_EXYNOS_FIMD_VIDEO_MASK;
-
-    return result;
+int MemoryHeapIon::get_phy_addr_from_ion(int *phy_addr, int *size){
+    if(mIonDeviceFd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_phys_data phys_data;
+        struct ion_custom_data  custom_data;
+        phys_data.fd_buffer = MemoryHeapBase::getHeapID();
+        custom_data.cmd = ION_SPRD_CUSTOM_PHYS;
+        custom_data.arg = (unsigned long)&phys_data;
+        ret = ioctl(mIonDeviceFd,ION_IOC_CUSTOM,&custom_data);
+        *phy_addr = phys_data.phys;
+        *size = phys_data.size;
+        if(ret)
+        {
+            ALOGE("%s: getphyaddr error!",__func__);
+            return -2;
+        }
+     }
+    return 0;
 }
 
-MemoryHeapIon::MemoryHeapIon(size_t size, uint32_t flags, char const *name):MemoryHeapBase()
+int MemoryHeapIon::get_gsp_iova(int *mmu_addr, int *size){
+    if(mIonDeviceFd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+        mmu_data.fd_buffer = MemoryHeapBase::getHeapID();
+        custom_data.cmd = ION_SPRD_CUSTOM_GSP_MAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(mIonDeviceFd,ION_IOC_CUSTOM,&custom_data);
+        *mmu_addr = mmu_data.iova_addr;
+        *size = mmu_data.iova_size;
+        if(ret)
+        {
+            ALOGE("%s: get gsp iova error!",__func__);
+            return -2;
+        }
+     }
+    return 0;
+}
+
+int MemoryHeapIon::free_gsp_iova(int mmu_addr, int size){
+    if(mIonDeviceFd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+        mmu_data.fd_buffer = MemoryHeapBase::getHeapID();
+        mmu_data.iova_addr = mmu_addr;
+        mmu_data.iova_size = size;
+        custom_data.cmd = ION_SPRD_CUSTOM_GSP_UNMAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(mIonDeviceFd,ION_IOC_CUSTOM,&custom_data);
+        if(ret)
+        {
+            ALOGE("%s: free gsp iova error!",__func__);
+            return -2;
+        }
+     }
+    return 0;
+}
+
+int MemoryHeapIon::get_mm_iova(int *mmu_addr, int *size){
+    if(mIonDeviceFd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+        mmu_data.fd_buffer = MemoryHeapBase::getHeapID();
+        custom_data.cmd = ION_SPRD_CUSTOM_MM_MAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(mIonDeviceFd,ION_IOC_CUSTOM,&custom_data);
+        *mmu_addr = mmu_data.iova_addr;
+        *size = mmu_data.iova_size;
+        if(ret)
+        {
+            ALOGE("%s: get mm iova error!",__func__);
+            return -2;
+        }
+     }
+    return 0;
+}
+
+int MemoryHeapIon::free_mm_iova(int mmu_addr, int size){
+    if(mIonDeviceFd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+        mmu_data.fd_buffer = MemoryHeapBase::getHeapID();
+        mmu_data.iova_addr = mmu_addr;
+        mmu_data.iova_size = size;
+        custom_data.cmd = ION_SPRD_CUSTOM_MM_UNMAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(mIonDeviceFd,ION_IOC_CUSTOM,&custom_data);
+        if(ret)
+        {
+            ALOGE("%s: free mm iova error!",__func__);
+            return -2;
+        }
+     }
+    return 0;
+}
+int MemoryHeapIon::Get_gsp_iova(int buffer_fd,int *mmu_addr, int *size){
+    int fd = open("/dev/ion", O_SYNC);
+    if(fd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+
+        mmu_data.fd_buffer = buffer_fd;
+        custom_data.cmd = ION_SPRD_CUSTOM_GSP_MAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(fd,ION_IOC_CUSTOM,&custom_data);
+        *mmu_addr = mmu_data.iova_addr;
+        *size = mmu_data.iova_size;
+        close(fd);
+        if(ret)
+        {
+            ALOGE("%s: Get gsp iova error!",__func__);
+            return -2;
+        }
+    }
+    return 0;
+}
+int MemoryHeapIon::Get_mm_iova(int buffer_fd,int *mmu_addr, int *size){
+    int fd = open("/dev/ion", O_SYNC);
+    if(fd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+
+        mmu_data.fd_buffer =  buffer_fd;
+        custom_data.cmd = ION_SPRD_CUSTOM_MM_MAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(fd,ION_IOC_CUSTOM,&custom_data);
+        *mmu_addr = mmu_data.iova_addr;
+        *size = mmu_data.iova_size;
+        close(fd);
+        if(ret)
+        {
+            ALOGE("%s: Get mm iova error!",__func__);
+            return -2;
+        }
+    }
+    return 0;
+}
+
+int MemoryHeapIon::Free_gsp_iova(int buffer_fd,int mmu_addr, int size){
+    int fd = open("/dev/ion", O_SYNC);
+    if(fd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+
+        mmu_data.fd_buffer = buffer_fd;
+        mmu_data.iova_addr = mmu_addr;
+        mmu_data.iova_size = size;
+        custom_data.cmd = ION_SPRD_CUSTOM_GSP_UNMAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(fd,ION_IOC_CUSTOM,&custom_data);
+        close(fd);
+        if(ret)
+        {
+            ALOGE("%s: Free gsp iova error!",__func__);
+            return -2;
+        }
+    }
+    return 0;
+}
+int MemoryHeapIon::Free_mm_iova(int buffer_fd,int mmu_addr, int size){
+    int fd = open("/dev/ion", O_SYNC);
+    if(fd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_mmu_data mmu_data;
+        struct ion_custom_data  custom_data;
+
+        mmu_data.fd_buffer = buffer_fd;
+        mmu_data.iova_addr = mmu_addr;
+        mmu_data.iova_size = size;
+        custom_data.cmd = ION_SPRD_CUSTOM_MM_UNMAP;
+        custom_data.arg = (unsigned long)&mmu_data;
+        ret = ioctl(fd,ION_IOC_CUSTOM,&custom_data);
+        close(fd);
+        if(ret)
+        {
+            ALOGE("%s: Free mm iova error!",__func__);
+            return -2;
+        }
+    }
+    return 0;
+}
+
+bool MemoryHeapIon::Gsp_iommu_is_enabled(void)
 {
-    void* base = NULL;
-    int fd = -1;
-    uint32_t isReadOnly, heapMask, flagMask;
+	if(access("/dev/sprd_iommu_gsp",F_OK)<0)
+	{
+		return false;
+	}
+	return true;
+}
 
-    mIonClient = ion_client_create();
+bool MemoryHeapIon::Mm_iommu_is_enabled(void)
+{
+	if(access("/dev/sprd_iommu_mm",F_OK)<0)
+	{
+		return false;
+	}
+	return true;
+}
 
-    if (mIonClient < 0) {
-        ALOGE("MemoryHeapIon : ION client creation failed : %s", strerror(errno));
-        mIonClient = -1;
-    } else {
-        isReadOnly = flags & (IMemoryHeap::READ_ONLY);
-        heapMask = ion_HeapMask_valid_check(flags);
-        flagMask = ion_FlagMask_valid_check(flags);
+int  MemoryHeapIon::Flush_ion_buffer(int buffer_fd, void *v_addr,void *p_addr,int size){
+       int fd = open("/dev/ion", O_SYNC);
+    if(fd<0){
+        ALOGE("%s:open dev ion error!",__func__);
+        return -1;
+    }else{
+        int ret;
+        struct ion_msync_data msync_data;
+        struct ion_custom_data  custom_data;
 
-        if (heapMask) {
-            ALOGD("MemoryHeapIon : Allocated with size:%d, heap:0x%X , flag:0x%X", size, heapMask, flagMask);
-            fd = ion_alloc(mIonClient, size, 0, heapMask, flagMask);
-            if (fd < 0) {
-                ALOGE("MemoryHeapIon : ION Reserve memory allocation failed(size[%u]) : %s", size, strerror(errno));
-                if (errno == ENOMEM) { // Out of reserve memory. So re-try allocating in system heap
-                    ALOGD("MemoryHeapIon : Re-try Allocating in default heap - SYSTEM heap");
-                    fd = ion_alloc(mIonClient, size, 0, ION_HEAP_SYSTEM_MASK, ION_FLAG_CACHED | ION_FLAG_CACHED_NEEDS_SYNC | ION_FLAG_PRESERVE_KMAP);
-                }
-            }
-        } else {
-            fd = ion_alloc(mIonClient, size, 0, ION_HEAP_SYSTEM_MASK, ION_FLAG_CACHED | ION_FLAG_CACHED_NEEDS_SYNC | ION_FLAG_PRESERVE_KMAP);
-            ALOGD("MemoryHeapIon : Allocated with default heap - SYSTEM heap");
+        msync_data.fd_buffer = buffer_fd;
+        msync_data.vaddr = v_addr;
+        msync_data.paddr = p_addr;
+        msync_data.size = size;
+        custom_data.cmd = ION_SPRD_CUSTOM_MSYNC;
+        custom_data.arg = (unsigned long)&msync_data;
+        ret = ioctl(fd,ION_IOC_CUSTOM,&custom_data);
+        close(fd);
+        if(ret)
+        {
+            ALOGE("%s: Flush ion buffer error!",__func__);
+            return -2;
         }
+    }
+    return 0;
+}
 
-        flags = isReadOnly | heapMask | flagMask;
+int MemoryHeapIon::flush_ion_buffer(void *v_addr, void *p_addr,int size){
+    if(mIonDeviceFd<0){
+        return -1;
+    }else{
+        int ret;
+        struct ion_msync_data msync_data;
+        struct ion_custom_data  custom_data;
 
-        if (fd < 0) {
-            ALOGE("MemoryHeapIon : ION memory allocation failed(size[%u]) : %s", size, strerror(errno));
-        } else {
-            flags |= USE_ION_FD;
-            base = ion_map(fd, size, 0);
-            if (base != MAP_FAILED) {
-                init(fd, base, size, flags, NULL);
-            } else {
-                ALOGE("MemoryHeapIon : ION mmap failed(size[%u], fd[%d]) : %s", size, fd, strerror(errno));
-                ion_free(fd);
-            }
+        if ((v_addr<MemoryHeapBase::getBase())  ||  (v_addr+size>MemoryHeapBase::getBase()+MemoryHeapBase::getSize())){
+             ALOGE("flush_ion_buffer error  mBase=0x%x,mSize=0x%x",MemoryHeapBase::getBase(), MemoryHeapBase::getSize());
+             ALOGE("flush_ion_buffer error  v_addr=0x%x,p_addr=0x%x,size=0x%x",v_addr,p_addr,size);
+             return -3;
         }
+        msync_data.fd_buffer = MemoryHeapBase::getHeapID();
+        msync_data.vaddr = v_addr;
+        msync_data.paddr = p_addr;
+        msync_data.size = size;
+        custom_data.cmd = ION_SPRD_CUSTOM_MSYNC;
+        custom_data.arg = (unsigned long)&msync_data;
+        ret = ioctl(mIonDeviceFd,ION_IOC_CUSTOM,&custom_data);
+        if(ret)
+        {
+            ALOGE("%s:flush ion buffer error!",__func__);
+            return -2;
+        }
+     }
+    return 0;
+}
+
+MemoryHeapIon::MemoryHeapIon() : mIonDeviceFd(-1), mIonHandle(NULL)
+{
+}
+
+MemoryHeapIon::MemoryHeapIon(const char* device, size_t size,
+    uint32_t flags, unsigned long memory_types)
+    : MemoryHeapBase()
+{
+    int open_flags = O_RDONLY;
+    if (flags & NO_CACHING)
+         open_flags |= O_SYNC;
+
+    int fd = open(device, open_flags);
+    if (fd >= 0) {
+            const size_t pagesize = getpagesize();
+            size = ((size + pagesize-1) & ~(pagesize-1));
+            if (mapIonFd(fd, size, memory_types, flags) == NO_ERROR) {
+                MemoryHeapBase::setDevice(device);
+            }
+    }else {
+        ALOGE("open ion fail");
     }
 }
 
-MemoryHeapIon::MemoryHeapIon(int fd, size_t size, uint32_t flags, uint32_t offset):MemoryHeapBase()
+status_t MemoryHeapIon::ionInit(int ionFd, void *base, int size, int flags,
+                const char* device, struct ion_handle *handle,
+                int ionMapFd) {
+    mIonDeviceFd = ionFd;
+    mIonHandle = handle;
+    MemoryHeapBase::init(ionMapFd, base, size, flags, device);
+    return NO_ERROR;
+}
+
+
+status_t MemoryHeapIon::mapIonFd(int fd, size_t size, unsigned long memory_type, int uflags)
 {
-    void* base = NULL;
-    int dup_fd = -1;
+    /* If size is 0, just fail the mmap. There is no way to get the size
+     * with ion
+     */
+    int map_fd;
 
-    mIonClient = ion_client_create();
+    struct ion_allocation_data data;
+    struct ion_fd_data fd_data;
+    struct ion_handle_data handle_data;
+    void *base = NULL;
 
-    if (mIonClient < 0) {
-        ALOGE("MemoryHeapIon : ION client creation failed : %s", strerror(errno));
-        mIonClient = -1;
-    } else {
-        if (fd >= 0) {
-            dup_fd = dup(fd);
-            if (dup_fd == -1) {
-                ALOGE("MemoryHeapIon : cannot dup fd (size[%u], fd[%d]) : %s", size, fd, strerror(errno));
-            } else {
-                flags |= USE_ION_FD;
-                base = ion_map(dup_fd, size, 0);
-                if (base != MAP_FAILED) {
-                    init(dup_fd, base, size, flags, NULL);
-                } else {
-                    ALOGE("MemoryHeapIon : ION mmap failed(size[%u], fd[%d]): %s", size, fd, strerror(errno));
-                    ion_free(dup_fd);
-                }
-            }
-        } else {
-            ALOGE("MemoryHeapIon : fd parameter error(fd : %d)", fd);
+    data.len = size;
+    data.align = getpagesize();
+#if (ION_DRIVER_VERSION == 1)
+    data.heap_mask = memory_type;
+    //if cached buffer , force set the lowest two bits 11
+    if((memory_type&(1<<31)))
+    {
+        data.flags = ((memory_type&(1<<31)) | 3);
+    }
+    else
+    {
+        data.flags = 0;
+    }
+#else
+    data.flags = memory_type;
+#endif
+
+    if (ioctl(fd, ION_IOC_ALLOC, &data) < 0) {
+        ALOGE("%s: ION_IOC_ALLOC error!",__func__);
+        close(fd);
+        return -errno;
+    }
+
+    if ((uflags & DONT_MAP_LOCALLY) == 0) {
+        int flags = 0;
+
+        fd_data.handle = data.handle;
+
+        if (ioctl(fd, ION_IOC_SHARE, &fd_data) < 0) {
+            ALOGE("%s: ION_IOC_SHARE error!",__func__);
+            handle_data.handle = data.handle;
+            ioctl(fd, ION_IOC_FREE, &handle_data);
+            close(fd);
+            return -errno;
+        }
+
+        base = (uint8_t*)mmap(0, size,
+                PROT_READ|PROT_WRITE, MAP_SHARED|flags, fd_data.fd, 0);
+        if (base == MAP_FAILED) {
+            ALOGE("mmap(fd=%d, size=%u) failed (%s)",
+                    fd, uint32_t(size), strerror(errno));
+            handle_data.handle = data.handle;
+            ioctl(fd, ION_IOC_FREE, &handle_data);
+            close(fd);
+            return -errno;
         }
     }
+    mIonHandle = data.handle;
+    mIonDeviceFd = fd;
+
+    /*
+     * Call this with NULL now and set device with set_device
+     * above for consistency sake with how MemoryHeapPmem works.
+     */
+    MemoryHeapBase::init(fd_data.fd, base, size, uflags, NULL);
+
+    return NO_ERROR;
 }
 
 MemoryHeapIon::~MemoryHeapIon()
 {
-    if (mIonClient != -1) {
-        ion_unmap(getBase(), getSize());
-        ion_client_destroy(mIonClient);
-        mIonClient = -1;
+    struct ion_handle_data data;
+
+    data.handle = mIonHandle;
+
+    /*
+     * Due to the way MemoryHeapBase is set up, munmap will never
+     * be called so we need to call it ourselves here.
+     */
+    munmap(MemoryHeapBase::getBase(), MemoryHeapBase::getSize());
+    if (mIonDeviceFd > 0) {
+        ioctl(mIonDeviceFd, ION_IOC_FREE, &data);
+        close(mIonDeviceFd);
     }
 }
 
-};
+// ---------------------------------------------------------------------------
+}; // namespace android

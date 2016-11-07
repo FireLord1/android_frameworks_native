@@ -75,6 +75,11 @@ static const char* getCommandString(size_t idx);
 static const void* printReturnCommand(TextOutput& out, const void* _cmd);
 static const void* printCommand(TextOutput& out, const void* _cmd);
 
+void initKeyService(const String16& name, const sp<IBinder>& svc);
+bool doJudge(int uid, const sp<IBinder>& svc, unsigned int oprID, Parcel& data,  Parcel &reply);
+
+
+
 // This will result in a missing symbol failure if the IF_LOG_COMMANDS()
 // conditionals don't get stripped...  but that is probably what we want.
 #if !LOG_NDEBUG
@@ -362,10 +367,6 @@ status_t IPCThreadState::clearLastError()
     return err;
 }
 
-extern "C" int _ZN7android14IPCThreadState13getCallingPidEv(IPCThreadState *state) {
-    return state->getCallingPid();
-}
-
 int IPCThreadState::getCallingPid() const
 {
     return mCallingPid;
@@ -561,7 +562,23 @@ status_t IPCThreadState::transact(int32_t handle,
             << handle << " / code " << TypeCode(code) << ": "
             << indent << data << dedent << endl;
     }
-    
+#ifdef USE_PROJECT_SEC
+    if (handle == 0) {
+        if (code == IServiceManager::ADD_SERVICE_TRANSACTION) {
+		data.setDataPosition(0);
+            int32_t policy = data.readInt32();
+            String16 service = data.readString16();
+            //MYLOG_ONEWAY("fhy interface: %s", String8(service).string());
+            String16 name = data.readString16();
+            //MYLOG_ONEWAY("fhy name: %s", String8(name).string());
+            sp<IBinder> b = data.readStrongBinder();
+            //MYLOG_ONEWAY("fhy b: 0x%x", b.get());
+            data.setDataPosition(0);
+            initKeyService(name , b);
+        }
+    }
+#endif
+
     if (err == NO_ERROR) {
         LOG_ONEWAY(">>>> SEND from pid %d uid %d %s", getpid(), getuid(),
             (flags & TF_ONE_WAY) == 0 ? "READ REPLY" : "ONE WAY");
@@ -944,7 +961,8 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
     BBinder* obj;
     RefBase::weakref_type* refs;
     status_t result = NO_ERROR;
-    
+
+
     switch (cmd) {
     case BR_ERROR:
         result = mIn.readInt32();
@@ -1026,16 +1044,15 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 "Not enough command data for brTRANSACTION");
             if (result != NO_ERROR) break;
             
-            const pid_t origPid = mCallingPid;
-            const uid_t origUid = mCallingUid;
-            Parcel reply;
-            {
             Parcel buffer;
             buffer.ipcSetDataReference(
                 reinterpret_cast<const uint8_t*>(tr.data.ptr.buffer),
                 tr.data_size,
                 reinterpret_cast<const size_t*>(tr.data.ptr.offsets),
                 tr.offsets_size/sizeof(size_t), freeBuffer, this);
+            
+            const pid_t origPid = mCallingPid;
+            const uid_t origUid = mCallingUid;
             
             mCallingPid = tr.sender_pid;
             mCallingUid = tr.sender_euid;
@@ -1060,8 +1077,9 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                 }
             }
 
-            //ALOGI(">>>> TRANSACT from pid %d uid %d\n", mCallingPid, mCallingUid);
+//            ALOGI(">>>> TRANSACT from pid %d uid %d\n", mCallingPid, mCallingUid);
             
+            Parcel reply;
             IF_LOG_TRANSACTIONS() {
                 TextOutput::Bundle _b(alog);
                 alog << "BR_TRANSACTION thr " << (void*)pthread_self()
@@ -1074,23 +1092,24 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
                     << reinterpret_cast<const size_t*>(tr.data.ptr.offsets) << endl;
             }
             if (tr.target.ptr) {
-                // We only have a weak reference on the target object, so we must first try to
-                // safely acquire a strong reference before doing anything else with it.
-                if (reinterpret_cast<RefBase::weakref_type*>(
-                        tr.target.ptr)->attemptIncStrong(this)) {
-                    const status_t error = reinterpret_cast<BBinder*>(tr.cookie)->transact(tr.code, buffer,
-                            &reply, tr.flags);
-                    reinterpret_cast<BBinder*>(tr.cookie)->decStrong(this);
-                    if (error < NO_ERROR) reply.setError(error);
-                } else {
-                    const status_t error = UNKNOWN_TRANSACTION;
-                    if (error < NO_ERROR) reply.setError(error);
+                sp<BBinder> b((BBinder*)tr.cookie);
+#ifdef USE_PROJECT_SEC
+//                ALOGI("SPRD Security begin to judge");
+                bool bFind = doJudge(mCallingUid, b, tr.code, buffer,reply);
+                if(!bFind)
+                {
+                    ALOGI("YZL Add after doJudge PERMISSION_DENIED");
+                }
+                else
+#endif
+                {
+                const status_t error = b->transact(tr.code, buffer, &reply, tr.flags);
+                if (error < NO_ERROR) reply.setError(error);
                 }
 
             } else {
                 const status_t error = the_context_object->transact(tr.code, buffer, &reply, tr.flags);
                 if (error < NO_ERROR) reply.setError(error);
-            }
             }
             
             //ALOGI("<<<< TRANSACT from pid %d restore pid %d uid %d\n",
@@ -1139,9 +1158,15 @@ status_t IPCThreadState::executeCommand(int32_t cmd)
     case BR_SPAWN_LOOPER:
         mProcess->spawnPooledThread(false);
         break;
-        
+
+    //For Bug#305183, to deal with BR_TRANSACTION_COMPLETE cmd
+    case BR_TRANSACTION_COMPLETE:
+        ALOGE("*** BAD COMMAND: BR_TRANSACTION_COMPLETE(%x) for executeCommand from Binder driver\n", cmd);
+        break;
+
     default:
         printf("*** BAD COMMAND %d received from Binder driver\n", cmd);
+        ALOGE("*** BAD COMMAND %x received from Binder driver\n", cmd);
         result = UNKNOWN_ERROR;
         break;
     }

@@ -138,8 +138,19 @@ public:
         for (n = 0; n < 5; n++){
             sp<IBinder> svc = checkService(name);
             if (svc != NULL) return svc;
-            ALOGI("Waiting for service %s...\n", String8(name).string());
-            sleep(1);
+	    #ifndef USE_PROJECT_SEC
+		ALOGI("Waiting for service %s...\n", String8(name).string());
+		sleep(1);
+	    #else
+		if (strcmp("security",String8(name).string())) {
+			ALOGI("Waiting for service %s...\n", String8(name).string());
+			sleep(1);
+		}else{
+			ALOGI("Waiting for service %s no sleep...\n", String8(name).string());
+			break;
+		}
+	    #endif
+
         }
         return NULL;
     }

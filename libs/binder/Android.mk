@@ -29,60 +29,40 @@ sources := \
     MemoryDealer.cpp \
     MemoryBase.cpp \
     MemoryHeapBase.cpp \
+    MemoryHeapIon.cpp \
     Parcel.cpp \
     PermissionCache.cpp \
     ProcessState.cpp \
     Static.cpp \
     TextOutput.cpp \
 
-ifeq ($(BOARD_NEEDS_MEMORYHEAPPMEM),true)
-sources += \
-    MemoryHeapPmem.cpp
-endif
-
-ifeq ($(BOARD_NEEDS_MEMORYHEAPION),true)
-sources += \
-    MemoryHeapIon.cpp
-endif
-
 LOCAL_PATH:= $(call my-dir)
 
+$(warning sec:${USE_PROJECT_SEC})
+
 include $(CLEAR_VARS)
-
-ifeq ($(BOARD_NEEDS_MEMORYHEAPION),true)
-LOCAL_SHARED_LIBRARIES += libion_exynos
-LOCAL_CFLAGS += -DUSE_MEMORY_HEAP_ION
-ifneq ($(TARGET_SLSI_VARIANT),)
-PLATFORM_DIR := $(TARGET_BOARD_PLATFORM)-$(TARGET_SLSI_VARIANT)
-else
-PLATFORM_DIR := $(TARGET_BOARD_PLATFORM)
+ifeq ($(USE_PROJECT_SEC),true)
+LOCAL_C_INCLUDES := $(LOCAL_PATH) \
+$(TOP)/external/sqlite/dist
+LOCAL_SHARED_LIBRARIES := libsqlite
+LOCAL_CFLAGS += -DUSE_PROJECT_SEC
+LOCAL_LDFLAGS += $(TOP)/frameworks/native/libs/libsecbinder/libsecbinder.a
 endif
-LOCAL_C_INCLUDES += hardware/samsung_slsi/$(PLATFORM_DIR)/include
-endif
-
 LOCAL_LDLIBS += -lpthread
 LOCAL_MODULE := libbinder
 LOCAL_SHARED_LIBRARIES += liblog libcutils libutils
+LOCAL_C_INCLUDES += \
+    $(TARGET_OUT_INTERMEDIATES)/KERNEL/usr/include/video/ \
+    $(TARGET_OUT_INTERMEDIATES)/KERNEL/
 LOCAL_SRC_FILES := $(sources)
-
 include $(BUILD_SHARED_LIBRARY)
 
 include $(CLEAR_VARS)
-
-ifeq ($(BOARD_NEEDS_MEMORYHEAPION),true)
-LOCAL_SHARED_LIBRARIES += libion_exynos
-LOCAL_CFLAGS += -DUSE_MEMORY_HEAP_ION
-ifneq ($(TARGET_SLSI_VARIANT),)
-PLATFORM_DIR := $(TARGET_BOARD_PLATFORM)-$(TARGET_SLSI_VARIANT)
-else
-PLATFORM_DIR := $(TARGET_BOARD_PLATFORM)
-endif
-LOCAL_C_INCLUDES += hardware/samsung_slsi/$(PLATFORM_DIR)/include
-endif
-
 LOCAL_LDLIBS += -lpthread
 LOCAL_MODULE := libbinder
 LOCAL_STATIC_LIBRARIES += libutils
 LOCAL_SRC_FILES := $(sources)
-
+LOCAL_C_INCLUDES += \
+    $(TARGET_OUT_INTERMEDIATES)/KERNEL/usr/include/video/ \
+    $(TARGET_OUT_INTERMEDIATES)/KERNEL/
 include $(BUILD_STATIC_LIBRARY)
